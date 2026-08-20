@@ -11,6 +11,7 @@ import configuracion
 import trabajadores
 import plantillas
 import mensajeria
+from actualizador import Actualizador, VERSION_ACTUAL
 
 
 class App(ctk.CTk):
@@ -40,12 +41,117 @@ class App(ctk.CTk):
         self.btn_config_telegram.pack(side='right', padx=5)
         self.btn_plantilla = ctk.CTkButton(top_frame, text='✏ Editar plantilla de correo', command=self.editar_plantilla)
         self.btn_plantilla.pack(side='right', padx=5)
+        self.btn_actualizar = ctk.CTkButton(top_frame, text='🔄 Buscar actualizaciones', command=self.buscar_actualizaciones, width=150)
+        self.btn_actualizar.pack(side='right', padx=5)
 
         self.setup_tab_registro()
         self.setup_tab_envio()
         self.setup_tab_directo()
         self.setup_tab_reportes()
         self.iniciar_limpieza_automatica()
+
+    # ------------------------------------------------------------
+    # Métodos de actualización
+    # ------------------------------------------------------------
+    def buscar_actualizaciones(self):
+        """Busca actualizaciones disponibles."""
+        ventana = ctk.CTkToplevel(self)
+        ventana.title("Verificando...")
+        ventana.geometry("300x100")
+        ventana.grab_set()
+        
+        ctk.CTkLabel(ventana, text="Buscando actualizaciones...").pack(pady=30)
+        
+        def verificar():
+            actualizador = Actualizador()
+            hay_actualizacion, version = actualizador.verificar_actualizacion()
+            
+            ventana.destroy()
+            
+            if hay_actualizacion:
+                self.mostrar_ventana_actualizacion(actualizador, version)
+            elif hay_actualizacion is False:
+                messagebox.showinfo("Sin actualizaciones", "Ya tienes la última versión.")
+            else:
+                messagebox.showerror("Error", "No se pudo verificar la actualización.")
+        
+        threading.Thread(target=verificar, daemon=True).start()
+
+    def mostrar_ventana_actualizacion(self, actualizador, version):
+        """Muestra ventana de actualización disponible."""
+        ventana = ctk.CTkToplevel(self)
+        ventana.title("Actualización disponible")
+        ventana.geometry("400x250")
+        ventana.grab_set()
+        
+        frame = ctk.CTkFrame(ventana)
+        frame.pack(fill='both', expand=True, padx=20, pady=20)
+        
+        ctk.CTkLabel(
+            frame,
+            text="¡Nueva versión disponible! 🎉",
+            font=ctk.CTkFont(size=18, weight='bold')
+        ).pack(pady=15)
+        
+        ctk.CTkLabel(
+            frame,
+            text=f"Versión actual: {VERSION_ACTUAL}\nNueva versión: {version}",
+            font=ctk.CTkFont(size=14)
+        ).pack(pady=10)
+        
+        btn_frame = ctk.CTkFrame(frame)
+        btn_frame.pack(pady=20)
+        
+        btn_actualizar = ctk.CTkButton(
+            btn_frame,
+            text="🔄 Actualizar ahora",
+            command=lambda: self.iniciar_actualizacion(actualizador, ventana),
+            fg_color='green',
+            width=150
+        )
+        btn_actualizar.pack(side='left', padx=10)
+        
+        btn_cancelar = ctk.CTkButton(
+            btn_frame,
+            text="Cancelar",
+            command=ventana.destroy,
+            fg_color='gray',
+            width=100
+        )
+        btn_cancelar.pack(side='left', padx=10)
+
+    def iniciar_actualizacion(self, actualizador, ventana_info):
+        """Inicia la actualización."""
+        ventana_info.destroy()
+        
+        ventana = ctk.CTkToplevel(self)
+        ventana.title("Actualizando...")
+        ventana.geometry("400x150")
+        ventana.grab_set()
+        
+        frame = ctk.CTkFrame(ventana)
+        frame.pack(fill='both', expand=True, padx=20, pady=20)
+        
+        label = ctk.CTkLabel(frame, text="Descargando...")
+        label.pack(pady=10)
+        
+        barra = ctk.CTkProgressBar(frame, width=300)
+        barra.pack(pady=10)
+        barra.set(0)
+        
+        def progreso(texto, valor):
+            label.configure(text=texto)
+            barra.set(valor)
+        
+        def instalar():
+            resultado = actualizador.descargar_e_instalar(progreso)
+            ventana.destroy()
+            if resultado:
+                messagebox.showinfo("Éxito", "Actualización completada.\nReinicie la aplicación.")
+            else:
+                messagebox.showerror("Error", "No se pudo completar la actualización.")
+        
+        threading.Thread(target=instalar, daemon=True).start()
 
     # ------------------------------------------------------------
     # Tab: Registro de trabajadores
@@ -401,7 +507,7 @@ class App(ctk.CTk):
 
         enviar_telegram = self.telegram_checkbox.get()
         hilos_correo = []
-        cola_telegram = []  # guardará (telefono, nombre, id_, pdf, log_callback)
+        cola_telegram = []
 
         for pdf in self.archivos_pdf:
             nombre_archivo = Path(pdf).name
@@ -416,7 +522,6 @@ class App(ctk.CTk):
                 continue
             _, nombre, email, telefono = trabajador
 
-            # Envío de correo en paralelo (sin problema)
             hilo_correo = threading.Thread(
                 target=mensajeria.enviar_correo,
                 args=(email, nombre, id_, pdf, log_callback, self.config_correo)
@@ -424,20 +529,17 @@ class App(ctk.CTk):
             hilo_correo.start()
             hilos_correo.append(hilo_correo)
 
-            # Agregar a la cola de Telegram si corresponde
             if enviar_telegram and telefono:
                 cola_telegram.append((telefono, nombre, id_, pdf, log_callback))
             elif enviar_telegram and not telefono:
                 log_callback(f'⚠ No se envió por Telegram a {nombre} porque no tiene número registrado.\n', 'error')
 
         def procesar_telegram():
-            """Envía los mensajes de Telegram uno por uno, respetando la pausa."""
             for telefono, nombre, id_, pdf, log_cb in cola_telegram:
                 mensajeria.enviar_telegram_sincrono(telefono, nombre, id_, pdf, log_cb)
             self.after(0, lambda: self.append_log('\n✅ Proceso de Telegram completado.\n', 'success'))
 
         def esperar_correos():
-            """Espera a que terminen los correos y luego inicia Telegram."""
             for h in hilos_correo:
                 h.join()
             if cola_telegram:
@@ -678,7 +780,6 @@ class App(ctk.CTk):
         scroll_y.pack(side='right', fill='y')
         self.tree_reportes.pack(side='left', fill='both', expand=True)
 
-        # Encabezados con clic para ordenar
         self.tree_reportes.heading('Fecha', text='Fecha', command=lambda: self.ordenar_reportes('Fecha'))
         self.tree_reportes.heading('ID', text='ID', command=lambda: self.ordenar_reportes('ID'))
         self.tree_reportes.heading('Nombre', text='Nombre', command=lambda: self.ordenar_reportes('Nombre'))
@@ -691,14 +792,12 @@ class App(ctk.CTk):
         self.tree_reportes.column('Método', width=100, anchor='center')
         self.tree_reportes.column('Archivo', width=200)
 
-        # Variables para ordenamiento y datos
-        self.reportes_datos = []          # lista de tuplas completas (id_envio, fecha, id_trab, nombre, metodo, archivo)
-        self.reportes_orden_actual = {}   # columna -> dirección ('asc' o 'desc')
+        self.reportes_datos = []
+        self.reportes_orden_actual = {}
 
         self.cargar_reportes()
 
     def cargar_reportes(self):
-        """Carga los reportes desde Supabase."""
         for item in self.tree_reportes.get_children():
             self.tree_reportes.delete(item)
 
@@ -706,18 +805,14 @@ class App(ctk.CTk):
         self._insertar_reportes_en_tabla(self.reportes_datos)
 
     def _insertar_reportes_en_tabla(self, datos):
-        """Inserta una lista de reportes en el Treeview."""
         for id_envio, fecha, id_trabajador, nombre, metodo, archivo in datos:
             item = self.tree_reportes.insert('', 'end', values=(fecha, id_trabajador, nombre, metodo, archivo))
-            # Guardar el id interno en el tag del item
             self.tree_reportes.item(item, tags=(str(id_envio),))
 
     def ordenar_reportes(self, columna):
-        """Ordena los reportes según la columna seleccionada."""
         if columna not in self.reportes_orden_actual:
             self.reportes_orden_actual[columna] = 'asc'
         else:
-            # Alternar entre ascendente y descendente
             if self.reportes_orden_actual[columna] == 'asc':
                 self.reportes_orden_actual[columna] = 'desc'
             else:
@@ -725,7 +820,6 @@ class App(ctk.CTk):
 
         direccion = self.reportes_orden_actual[columna]
 
-        # Índices de las columnas en la tupla de datos
         indices = {
             'Fecha': 1,
             'ID': 2,
@@ -735,20 +829,17 @@ class App(ctk.CTk):
         }
         idx = indices[columna]
 
-        # Ordenar la lista de datos
         datos_ordenados = sorted(
             self.reportes_datos,
             key=lambda x: x[idx],
             reverse=(direccion == 'desc')
         )
 
-        # Limpiar y volver a insertar
         for item in self.tree_reportes.get_children():
             self.tree_reportes.delete(item)
         self._insertar_reportes_en_tabla(datos_ordenados)
 
     def eliminar_reporte(self):
-        """Elimina el reporte seleccionado de la base de datos."""
         seleccion = self.tree_reportes.selection()
         if not seleccion:
             messagebox.showwarning('Advertencia', 'Seleccione un reporte para eliminar')
@@ -760,7 +851,6 @@ class App(ctk.CTk):
             return
         id_envio = int(tags[0])
 
-        # Confirmar eliminación
         if not messagebox.askyesno('Confirmar', f'¿Eliminar el reporte con ID interno {id_envio}?'):
             return
 
@@ -771,7 +861,6 @@ class App(ctk.CTk):
             messagebox.showerror('Error', 'No se pudo eliminar el reporte')
 
     def exportar_reportes_excel(self):
-        """Exporta los reportes mostrados a un archivo Excel."""
         items = self.tree_reportes.get_children()
         if not items:
             messagebox.showwarning('Advertencia', 'No hay reportes para exportar')
@@ -802,16 +891,13 @@ class App(ctk.CTk):
     # Limpieza automática de reportes
     # ------------------------------------------------------------
     def limpiar_reportes_automatico(self):
-        """Elimina reportes de días anteriores al día actual."""
         hoy = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         fecha_limite = hoy.isoformat()
         configuracion.eliminar_envios_anteriores_a(fecha_limite)
         self.cargar_reportes()
 
     def iniciar_limpieza_automatica(self):
-        """Ejecuta limpieza de reportes al inicio y cada 24 horas."""
         self.limpiar_reportes_automatico()
-        # Programar próxima limpieza en 24 horas
         self.after(24 * 60 * 60 * 1000, self.iniciar_limpieza_automatica)
 
     # ------------------------------------------------------------
@@ -961,7 +1047,6 @@ class App(ctk.CTk):
                     async def auth():
                         from telethon import TelegramClient
                         from telethon.sessions import StringSession
-                        # Usamos StringSession vacía para evitar archivo .session
                         client = TelegramClient(
                             StringSession(),
                             int(config['api_id']),
@@ -990,7 +1075,6 @@ class App(ctk.CTk):
                                         raise Exception('No se ingresó la contraseña de 2FA')
                                 else:
                                     raise
-                        # Guardar la sesión en archivo local
                         session_string = client.session.save()
                         configuracion.guardar_session_telegram_local(session_string)
                         await client.disconnect()

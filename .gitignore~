@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+telegram_session.txt
+mikrosend_telegram.session
+.env
+backup/

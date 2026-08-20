@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+telegram_session.txt
+.env
+backup/
+.gitignore~
